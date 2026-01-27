@@ -1,36 +1,29 @@
-# mediacntrl
+## Mediacntrl 
+a cli for controlling media players
 
-an MPRIS/Music playback controller for systemd linux systems using libsystemd/sd-bus
-
-basically a playerctl alternative
-
-### usage:
-
-```
-mediacntrl [-q <query>] (play|pause|play-pause|next|previous) [-nstdout (optional)]
+### Usage:
+```  
+./mediacntrl <command> [args]
+./mediacntrl <player> <command> [args]
 ```
 
-### example:
-
+### Commands:
 ```
-mediacntrl -q spotify next
-```
-
-### Compilation
-
-to compile make sure you have libsystemd-dev sometimes named libsystemd-devel or systemd-devel and that you are running systemd as your init system
-
-also make sure you have a modern c compiler and meson + ninja
-
-to build:
-
-```
-meson setup build
-ninja -C build
+play            start playback
+pause           pause playback
+play-pause      toggle playback
+stop            stop playback
+next            next track
+previous        previous track
+position <s>    jump to position (seconds)
 ```
 
-the output file should be stored here
+### Examples:
 
-```
-{PROJECT_ROOT_DIR}/build/src/mediacntrl
-```
+./mediacntrl play
+
+./mediacntrl vlc pause
+
+./mediacntrl firefox position 10
+
+./mediacntrl play-pause
