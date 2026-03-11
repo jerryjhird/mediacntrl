@@ -24,6 +24,23 @@ position <s>    jump to position (seconds)
 
 ./mediacntrl vlc pause
 
-./mediacntrl firefox position 10
+./mediacntrl librewolf position 10
 
 ./mediacntrl play-pause
+
+### Web api
+
+if compiled with `-DHTTP_SUPPORT` (the makefile does this) you will be able to pass --http which runs a http server in the foreground
+
+the layout should be:
+"http://localhost:port/player-query/command"
+
+#### Examples (for interacting using curl):
+
+curl http://localhost:8000/spotify/play-pause
+
+curl http://localhost:8000/spotify/position/30
+
+curl http://localhost:8000/spotify/next
+
+curl http://localhost:8000/spotify/previous

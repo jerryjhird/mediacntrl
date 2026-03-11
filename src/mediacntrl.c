@@ -1,8 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. 
-// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
-// This Source Code Form is “Incompatible With Secondary Licenses”, as defined by the Mozilla Public License, v. 2.0.
-// source: https://codeberg.org/jerryjhird/mediacntrl
-
 #include <systemd/sd-bus.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +41,10 @@ static void print_help(void) {
         "  %s <command> [args]\n"
         "  %s <player> <command> [args]\n"
         "\n"
+        #ifdef HTTP_SUPPORT
+        "%s --http:\n"
+        "  api-format: http://localhost:port/player-query/command\n\n"
+        #endif
         "Commands:\n"
         "  play            start playback\n"
         "  pause           pause playback\n"
@@ -60,7 +59,7 @@ static void print_help(void) {
         "  %s vlc pause\n"
         "  %s firefox position 10\n"
         "  %s play-pause\n\n",
-        g_argv[0], g_argv[0],
+        g_argv[0], g_argv[0], g_argv[0],
         g_argv[0], g_argv[0], g_argv[0], g_argv[0]
     );
 }
@@ -150,29 +149,105 @@ static char *get_track_id(sd_bus *bus, const char *player) {
     }
 }
 
+int eval_command(const char *player_hint, const char *cmd_str, const char *arg1) {
+    command_t cmd = parse_cmd(cmd_str);
+    if (cmd == CMD_UNKNOWN) return -1;
+
+    sd_bus *bus = NULL;
+    if (sd_bus_open_user(&bus) < 0) return -2;
+
+    if (cmd == CMD_LIST) {
+        int n = 0;
+        char **players = list_players(bus, &n);
+        if (players) {
+            for (int i = 0; i < n; i++) {
+                printf("%s\n", players[i] + 23);
+                free(players[i]);
+            }
+            free(players);
+        }
+        sd_bus_unref(bus);
+        return 0;
+    }
+
+    char *player = choose_player(bus, player_hint);
+    if (!player) {
+        sd_bus_unref(bus);
+        return -3;
+    }
+
+    int ret = 0;
+    if (cmd == CMD_PLAY)
+        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Play", NULL, NULL, "");
+    else if (cmd == CMD_PAUSE)
+        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Pause", NULL, NULL, "");
+    else if (cmd == CMD_PLAY_PAUSE)
+        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "PlayPause", NULL, NULL, "");
+    else if (cmd == CMD_STOP)
+        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Stop", NULL, NULL, "");
+    else if (cmd == CMD_NEXT)
+        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Next", NULL, NULL, "");
+    else if (cmd == CMD_PREVIOUS)
+        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Previous", NULL, NULL, "");
+    else if (cmd == CMD_POSITION) {
+        if (!arg1 || *arg1 == '\0') {
+            ret = -4;
+        } else {
+            char *end;
+            double sec = strtod(arg1, &end);
+            if (end == arg1 || *end != '\0' || sec < 0) {
+                ret = -4;
+            } else {
+                int64_t usec = (int64_t)(sec * 1000000.0);
+                char *track = get_track_id(bus, player);
+                if (track) {
+                    sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "SetPosition", NULL, NULL, "ox", track, usec);
+                    free(track);
+                } else {
+                    ret = -5;
+                }
+            }
+        }
+    }
+
+    free(player);
+    sd_bus_unref(bus);
+    return ret;
+}
+
+#ifdef HTTP_SUPPORT
+#include "http.c"
+#endif
+
 int main(int argc, char **argv) {
     g_argc = argc;
     g_argv = (const char **)argv;
-    
-    const char *player_hint = NULL;
-    const char *cmd_str = NULL;
-    const char *arg1 = NULL;
 
     if (argc < 2) {
         print_help();
         return 0;
     }
 
-    // check if first arg command or player
+    if (strcmp(argv[1], "--http") == 0) {
+        #ifdef HTTP_SUPPORT
+            int port = (argc >= 3) ? atoi(argv[2]) : 8000;
+            start_http_server(port);
+            return 0;
+        #else
+            fprintf(stderr, "ERROR: this build of mediacntrl was not compiled with HTTP support\n");
+            return 1;
+        #endif
+    }
+    const char *player_hint = NULL;
+    const char *cmd_str = NULL;
+    const char *arg1 = NULL;
+
     command_t c1 = parse_cmd(argv[1]);
     if (c1 != CMD_UNKNOWN) {
-        // prog [command] [args]
         cmd_str = argv[1];
         arg1 = (argc >= 3) ? argv[2] : NULL;
     } else {
-        // prog [player] [command] [args]
         if (argc < 3) {
-            // first arg not command or isnt player
             print_help();
             return 0;
         }
@@ -181,97 +256,11 @@ int main(int argc, char **argv) {
         arg1 = (argc >= 4) ? argv[3] : NULL;
     }
 
-    command_t cmd = parse_cmd(cmd_str);
-    if (cmd == CMD_UNKNOWN) {
-        print_help();
-        return 0;
-    }
-
-    sd_bus *bus = NULL;
-    if (sd_bus_open_user(&bus) < 0)
-        return 1;
-
-    if (cmd == CMD_LIST) {
-        int n = 0;
-        char **players = list_players(bus, &n);
-
-        if (!players || n == 0) {
-            printf("no MPRIS players found\n");
-            sd_bus_unref(bus);
-            return 0;
-        }
-
-        for (int i = 0; i < n; i++) {
-            printf("%s\n", players[i] + 23);
-            free(players[i]);
-        }
-
-        free(players);
-        sd_bus_unref(bus);
-        return 0;
-    }
-
-    char *player = choose_player(bus, player_hint);
-    if (!player) {
-        fprintf(stderr, "no MPRIS player found\n");
+    int res = eval_command(player_hint, cmd_str, arg1);
+    if (res < 0) {
+        if (res == -4) print_help();
         return 1;
     }
 
-    if (cmd == CMD_PLAY)
-        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player", "Play", NULL, NULL, "");
-    else if (cmd == CMD_PAUSE)
-        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player", "Pause", NULL, NULL, "");
-    else if (cmd == CMD_PLAY_PAUSE)
-        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player", "PlayPause", NULL, NULL, "");
-    else if (cmd == CMD_STOP)
-        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player", "Stop", NULL, NULL, "");
-    else if (cmd == CMD_NEXT)
-        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player", "Next", NULL, NULL, "");
-    else if (cmd == CMD_PREVIOUS)
-        sd_bus_call_method(bus, player, "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player", "Previous", NULL, NULL, "");
-    else if (cmd == CMD_POSITION) {
-        if (!arg1) {
-            print_help();
-            sd_bus_unref(bus);
-            return 1;
-        }
-
-        char *end;
-        double sec = strtod(arg1, &end);
-
-        if (*end != '\0' || sec < 0) {
-            print_help();
-            sd_bus_unref(bus);
-            return 1;
-        }
-
-        int64_t usec = (int64_t)(sec * 1000000.0);
-
-        char *track = get_track_id(bus, player);
-        if (!track) {
-            fprintf(stderr, "failed to get track id\n");
-            return 2;
-        }
-
-        sd_bus_call_method(
-            bus, player,
-            "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player",
-            "SetPosition",
-            NULL, NULL,
-            "ox", track, usec
-        );
-
-        free(track);
-    }
-
-    free(player);
-    sd_bus_unref(bus);
     return 0;
 }
